@@ -1703,7 +1703,7 @@ mod jsonlogic_tests {
         // Test overriding built-in operators
         add_operation(
             "==",
-            |args| {
+            |_args| {
                 // Custom equality that always returns false
                 Ok(json!(false))
             },
