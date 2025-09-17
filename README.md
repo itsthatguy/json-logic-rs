@@ -98,28 +98,47 @@ fn main() {
 You can add your own operations at runtime using the `add_operation`, `add_lazy_operation`, and `add_data_operation` functions:
 
 ```rust
-use jsonlogic_rs::{add_operation, apply, NumParams};
+use jsonlogic_rs::{add_operation, apply, NumParams, Error};
 use serde_json::{json, Value};
 
-fn main() {
-    // Add a custom "double" operation
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Add a custom "double" operation with proper error handling
     add_operation("double", |args| {
-        if let Some(Value::Number(n)) = args.first() {
-            if let Some(num) = n.as_f64() {
-                return Ok(json!(num * 2.0));
+        match args.first() {
+            Some(Value::Number(n)) => {
+                if let Some(num) = n.as_f64() {
+                    Ok(json!(num * 2.0))
+                } else {
+                    Err(Error::InvalidArgument {
+                        value: (*n).clone().into(),
+                        operation: "double".to_string(),
+                        reason: "Number cannot be converted to f64".to_string(),
+                    })
+                }
             }
+            Some(other) => Err(Error::InvalidArgument {
+                value: other.clone(),
+                operation: "double".to_string(),
+                reason: "Expected a number".to_string(),
+            }),
+            None => Err(Error::InvalidArgument {
+                value: Value::Null,
+                operation: "double".to_string(),
+                reason: "Missing required argument".to_string(),
+            }),
         }
-        Ok(Value::Null)
     }, NumParams::Exactly(1));
 
     // Use the custom operation in a rule
-    let result = apply(&json!({"double": [21]}), &json!({})).unwrap();
+    let result = apply(&json!({"double": [21]}), &json!({}))?;
     assert_eq!(result, json!(42.0));
 
     // Custom operations take precedence over built-in ones
     add_operation("==", |_args| Ok(json!("custom!")), NumParams::Exactly(2));
-    let result = apply(&json!({"==": [1, 1]}), &json!({})).unwrap();
+    let result = apply(&json!({"==": [1, 1]}), &json!({}))?;
     assert_eq!(result, json!("custom!"));
+
+    Ok(())
 }
 ```
 
@@ -128,6 +147,21 @@ Three types of custom operations are supported:
 - **Regular Operations** (`add_operation`): Receive evaluated arguments, like built-in arithmetic operators
 - **Lazy Operations** (`add_lazy_operation`): Receive data context and unevaluated arguments, allowing control over evaluation flow (like `if`, `and`, `or`)
 - **Data Operations** (`add_data_operation`): Similar to lazy operations but designed for data access patterns (like `var`, `missing`)
+
+#### Error Handling
+
+The `Error` type is exported for proper error handling in custom operations. You can return specific error types from your custom operators:
+
+```rust
+use jsonlogic_rs::Error;
+
+// Custom operators can return structured errors
+Err(Error::InvalidArgument {
+    value: invalid_value.clone(),
+    operation: "my_operation".to_string(),
+    reason: "Expected a positive number".to_string(),
+})
+```
 
 See the [examples/custom_operators.rs](examples/custom_operators.rs) file for more comprehensive examples.
 

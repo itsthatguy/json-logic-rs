@@ -7,16 +7,19 @@ pub mod js_op;
 mod op;
 mod value;
 
-use error::Error;
-use op::{DataOperatorFn, DynamicDataOperator, DynamicLazyOperator, DynamicOperator, LazyOperatorFn, OperatorFn, get_custom_operator_registry};
-pub use op::NumParams;
+pub use error::Error;
+use op::{
+    get_custom_operator_registry, DynamicDataOperator, DynamicLazyOperator,
+    DynamicOperator,
+};
+pub use op::{DataOperatorFn, LazyOperatorFn, NumParams, OperatorFn};
 use value::{Evaluated, Parsed};
 
 const NULL: Value = Value::Null;
 
 trait Parser<'a>: Sized + Into<Value> {
-    fn from_value(value: &'a Value) -> Result<Option<Self>, Error>;
-    fn evaluate(&self, data: &'a Value) -> Result<Evaluated, Error>;
+    fn from_value(value: &'a Value) -> Result<Option<Self>, error::Error>;
+    fn evaluate(&self, data: &'a Value) -> Result<Evaluated, error::Error>;
 }
 
 #[cfg(feature = "wasm")]
@@ -86,7 +89,7 @@ pub mod python_iface {
 
 /// Run JSONLogic for the given operation and data.
 ///
-pub fn apply(value: &Value, data: &Value) -> Result<Value, Error> {
+pub fn apply(value: &Value, data: &Value) -> Result<Value, error::Error> {
     let parsed = Parsed::from_value(&value)?;
     parsed.evaluate(data).map(Value::from)
 }
@@ -104,17 +107,34 @@ pub fn apply(value: &Value, data: &Value) -> Result<Value, Error> {
 ///
 /// # Example
 /// ```
-/// use jsonlogic_rs::{add_operation, NumParams};
+/// use jsonlogic_rs::{add_operation, NumParams, Error};
 /// use serde_json::{json, Value};
 ///
-/// // Register a custom "double" operation
+/// // Register a custom "double" operation with proper error handling
 /// add_operation("double", |args| {
-///     if let Some(Value::Number(n)) = args.first() {
-///         if let Some(num) = n.as_f64() {
-///             return Ok(json!(num * 2.0));
+///     match args.first() {
+///         Some(Value::Number(n)) => {
+///             if let Some(num) = n.as_f64() {
+///                 Ok(json!(num * 2.0))
+///             } else {
+///                 Err(Error::InvalidArgument {
+///                     value: (*n).clone().into(),
+///                     operation: "double".to_string(),
+///                     reason: "Number cannot be converted to f64".to_string(),
+///                 })
+///             }
 ///         }
+///         Some(other) => Err(Error::InvalidArgument {
+///             value: other.clone(),
+///             operation: "double".to_string(),
+///             reason: "Expected a number".to_string(),
+///         }),
+///         None => Err(Error::InvalidArgument {
+///             value: Value::Null,
+///             operation: "double".to_string(),
+///             reason: "Missing required argument".to_string(),
+///         }),
 ///     }
-///     Ok(Value::Null)
 /// }, NumParams::Exactly(1));
 /// ```
 pub fn add_operation(name: &str, operator: OperatorFn, num_params: NumParams) {
@@ -1556,54 +1576,72 @@ mod jsonlogic_tests {
     #[test]
     fn test_custom_operations() {
         // Test custom regular operation
-        add_operation("double", |args| {
-            if let Some(Value::Number(n)) = args.first() {
-                if let Some(num) = n.as_f64() {
-                    return Ok(json!(num * 2.0));
+        add_operation(
+            "double",
+            |args| {
+                if let Some(Value::Number(n)) = args.first() {
+                    if let Some(num) = n.as_f64() {
+                        return Ok(json!(num * 2.0));
+                    }
                 }
-            }
-            Ok(Value::Null)
-        }, NumParams::Exactly(1));
+                Ok(Value::Null)
+            },
+            NumParams::Exactly(1),
+        );
 
         let result = apply(&json!({"double": [5]}), &json!({})).unwrap();
         assert_eq!(result, json!(10.0));
 
         // Test custom lazy operation
-        add_lazy_operation("first_truthy", |_data, args| {
-            for arg in args {
-                if let Value::Bool(true) = arg {
-                    return Ok(json!(true));
-                }
-                if let Value::Number(n) = arg {
-                    if n.as_f64().unwrap_or(0.0) != 0.0 {
-                        return Ok((*arg).clone());
+        add_lazy_operation(
+            "first_truthy",
+            |_data, args| {
+                for arg in args {
+                    if let Value::Bool(true) = arg {
+                        return Ok(json!(true));
+                    }
+                    if let Value::Number(n) = arg {
+                        if n.as_f64().unwrap_or(0.0) != 0.0 {
+                            return Ok((*arg).clone());
+                        }
                     }
                 }
-            }
-            Ok(Value::Null)
-        }, NumParams::AtLeast(1));
+                Ok(Value::Null)
+            },
+            NumParams::AtLeast(1),
+        );
 
-        let result = apply(&json!({"first_truthy": [false, 0, 42, true]}), &json!({})).unwrap();
+        let result =
+            apply(&json!({"first_truthy": [false, 0, 42, true]}), &json!({})).unwrap();
         assert_eq!(result, json!(42));
 
         // Test custom data operation
-        add_data_operation("get_field", |data, args| {
-            if let Some(Value::String(field)) = args.first() {
-                if let Value::Object(obj) = data {
-                    return Ok(obj.get(field).cloned().unwrap_or(Value::Null));
+        add_data_operation(
+            "get_field",
+            |data, args| {
+                if let Some(Value::String(field)) = args.first() {
+                    if let Value::Object(obj) = data {
+                        return Ok(obj.get(field).cloned().unwrap_or(Value::Null));
+                    }
                 }
-            }
-            Ok(Value::Null)
-        }, NumParams::Exactly(1));
+                Ok(Value::Null)
+            },
+            NumParams::Exactly(1),
+        );
 
-        let result = apply(&json!({"get_field": ["name"]}), &json!({"name": "test"})).unwrap();
+        let result =
+            apply(&json!({"get_field": ["name"]}), &json!({"name": "test"})).unwrap();
         assert_eq!(result, json!("test"));
 
         // Test overriding built-in operators
-        add_operation("==", |args| {
-            // Custom equality that always returns false
-            Ok(json!(false))
-        }, NumParams::Exactly(2));
+        add_operation(
+            "==",
+            |args| {
+                // Custom equality that always returns false
+                Ok(json!(false))
+            },
+            NumParams::Exactly(2),
+        );
 
         let result = apply(&json!({"==": [1, 1]}), &json!({})).unwrap();
         assert_eq!(result, json!(false)); // Our custom operator overrides the built-in
@@ -1614,5 +1652,50 @@ mod jsonlogic_tests {
         // After clearing, built-in operators should work again
         let result = apply(&json!({"==": [1, 1]}), &json!({})).unwrap();
         assert_eq!(result, json!(true));
+    }
+
+    #[test]
+    fn test_error_handling_in_custom_operations() {
+        // Test that consumers can use the Error type for proper error handling
+        add_operation(
+            "test_error_unique",
+            |args| {
+                if let Some(Value::String(s)) = args.first() {
+                    if s == "error" {
+                        return Err(Error::InvalidArgument {
+                            value: args[0].clone(),
+                            operation: "test_error_unique".to_string(),
+                            reason: "Custom error message".to_string(),
+                        });
+                    }
+                }
+                Ok(json!("success"))
+            },
+            NumParams::Exactly(1),
+        );
+
+        // Test successful case
+        let result = apply(&json!({"test_error_unique": [1]}), &json!({})).unwrap();
+        assert_eq!(result, json!("success"));
+
+        // Test custom error case
+        match apply(&json!({"test_error_unique": ["error"]}), &json!({})) {
+            Ok(_) => panic!("Should have failed!"),
+            Err(e) => {
+                // Verify we can match on the Error type
+                match e {
+                    Error::InvalidArgument {
+                        operation, reason, ..
+                    } => {
+                        assert_eq!(operation, "test_error_unique");
+                        assert_eq!(reason, "Custom error message");
+                    }
+                    _ => panic!("Wrong error type: {:?}", e),
+                }
+            }
+        }
+
+        // Clean up
+        clear_operations();
     }
 }
