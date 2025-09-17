@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(Value::Null)
         },
         NumParams::Exactly(1),
-    );
+    )?;
 
     let result = apply(&json!({"double": [21]}), &json!({}))?;
     println!("  Rule: {{\"double\": [21]}}");
@@ -52,7 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(json!(false))
         },
         NumParams::Exactly(2),
-    );
+    )?;
 
     let result = apply(
         &json!({"conditional_log": [true, "Hello from JsonLogic!"]}),
@@ -76,7 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(Value::Null)
         },
         NumParams::Exactly(1),
-    );
+    )?;
 
     let result = apply(
         &json!({"upper": ["name"]}),
@@ -99,7 +99,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(json!("CUSTOM!"))
         },
         NumParams::Exactly(2),
-    );
+    )?;
 
     println!("  After adding custom override:");
     let result = apply(&json!({"==": [1, 1]}), &json!({}))?;
@@ -124,7 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(Value::Null)
         },
         NumParams::Exactly(2),
-    );
+    )?;
 
     // Square root operation
     add_operation(
@@ -140,7 +140,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(Value::Null)
         },
         NumParams::Exactly(1),
-    );
+    )?;
 
     // Test complex expression: sqrt(pow(3, 2) + pow(4, 2))
     let result = apply(
@@ -160,7 +160,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 6. Clean up
     println!("6. Cleaning up custom operations...");
-    clear_operations();
+    clear_operations()?;
 
     // Verify built-in operators work again
     let result = apply(&json!({"==": [1, 1]}), &json!({}))?;
@@ -213,7 +213,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }),
         },
         NumParams::Exactly(2),
-    );
+    )?;
 
     // Test successful division
     let result = apply(&json!({"safe_divide": [10, 2]}), &json!({}))?;
@@ -249,7 +249,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(Value::Null)
         },
         NumParams::Exactly(2),
-    );
+    )?;
 
     // Test correct usage
     let result = apply(&json!({"multiply": [3, 4]}), &json!({}))?;

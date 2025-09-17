@@ -35,4 +35,7 @@ pub enum Error {
 
     #[error("Wrong argument count - expected: {expected:?}, actual: {actual:?}")]
     WrongArgumentCount { expected: NumParams, actual: usize },
+
+    #[error("Registry operation failed - {reason}")]
+    RegistryError { reason: String },
 }

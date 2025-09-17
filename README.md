@@ -127,14 +127,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 reason: "Missing required argument".to_string(),
             }),
         }
-    }, NumParams::Exactly(1));
+    }, NumParams::Exactly(1))?;
 
     // Use the custom operation in a rule
     let result = apply(&json!({"double": [21]}), &json!({}))?;
     assert_eq!(result, json!(42.0));
 
     // Custom operations take precedence over built-in ones
-    add_operation("==", |_args| Ok(json!("custom!")), NumParams::Exactly(2));
+    add_operation("==", |_args| Ok(json!("custom!")), NumParams::Exactly(2))?;
     let result = apply(&json!({"==": [1, 1]}), &json!({}))?;
     assert_eq!(result, json!("custom!"));
 

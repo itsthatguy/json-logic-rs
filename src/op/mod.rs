@@ -9,11 +9,12 @@
 // as operators. They were originally done differently because there wasn't
 // yet a LazyOperator concept.
 
+use once_cell::sync::Lazy;
 use phf::phf_map;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Once, RwLock};
+use std::sync::RwLock;
 
 use crate::error::Error;
 use crate::value::to_number_value;
@@ -248,16 +249,11 @@ impl CustomOperatorRegistry {
     }
 }
 
-static CUSTOM_OPERATOR_REGISTRY_INIT: Once = Once::new();
-static mut CUSTOM_OPERATOR_REGISTRY: Option<CustomOperatorRegistry> = None;
+static CUSTOM_OPERATOR_REGISTRY: Lazy<CustomOperatorRegistry> =
+    Lazy::new(CustomOperatorRegistry::new);
 
 pub fn get_custom_operator_registry() -> &'static CustomOperatorRegistry {
-    unsafe {
-        CUSTOM_OPERATOR_REGISTRY_INIT.call_once(|| {
-            CUSTOM_OPERATOR_REGISTRY = Some(CustomOperatorRegistry::new());
-        });
-        CUSTOM_OPERATOR_REGISTRY.as_ref().unwrap()
-    }
+    &CUSTOM_OPERATOR_REGISTRY
 }
 
 #[derive(Debug, Clone)]

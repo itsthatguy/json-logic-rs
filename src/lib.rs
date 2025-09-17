@@ -137,13 +137,23 @@ pub fn apply(value: &Value, data: &Value) -> Result<Value, error::Error> {
 ///     }
 /// }, NumParams::Exactly(1));
 /// ```
-pub fn add_operation(name: &str, operator: OperatorFn, num_params: NumParams) {
+pub fn add_operation(
+    name: &str,
+    operator: OperatorFn,
+    num_params: NumParams,
+) -> Result<(), Error> {
     let registry = get_custom_operator_registry();
     let dynamic_op = DynamicOperator::new(name, operator, num_params);
 
-    if let Ok(mut ops) = registry.operators.write() {
-        ops.insert(name.to_string(), dynamic_op);
-    }
+    registry
+        .operators
+        .write()
+        .map_err(|_| Error::RegistryError {
+            reason: "Failed to acquire operator registry lock".to_string(),
+        })?
+        .insert(name.to_string(), dynamic_op);
+
+    Ok(())
 }
 
 /// Add a custom lazy operation that can be used in JsonLogic rules.
@@ -167,13 +177,23 @@ pub fn add_operation(name: &str, operator: OperatorFn, num_params: NumParams) {
 ///     Ok(args.first().map(|v| (*v).clone()).unwrap_or(Value::Null))
 /// }, NumParams::AtLeast(1));
 /// ```
-pub fn add_lazy_operation(name: &str, operator: LazyOperatorFn, num_params: NumParams) {
+pub fn add_lazy_operation(
+    name: &str,
+    operator: LazyOperatorFn,
+    num_params: NumParams,
+) -> Result<(), Error> {
     let registry = get_custom_operator_registry();
     let dynamic_op = DynamicLazyOperator::new(name, operator, num_params);
 
-    if let Ok(mut ops) = registry.lazy_operators.write() {
-        ops.insert(name.to_string(), dynamic_op);
-    }
+    registry
+        .lazy_operators
+        .write()
+        .map_err(|_| Error::RegistryError {
+            reason: "Failed to acquire lazy operator registry lock".to_string(),
+        })?
+        .insert(name.to_string(), dynamic_op);
+
+    Ok(())
 }
 
 /// Add a custom data operation that can be used in JsonLogic rules.
@@ -203,13 +223,23 @@ pub fn add_lazy_operation(name: &str, operator: LazyOperatorFn, num_params: NumP
 ///     }
 /// }, NumParams::Exactly(1));
 /// ```
-pub fn add_data_operation(name: &str, operator: DataOperatorFn, num_params: NumParams) {
+pub fn add_data_operation(
+    name: &str,
+    operator: DataOperatorFn,
+    num_params: NumParams,
+) -> Result<(), Error> {
     let registry = get_custom_operator_registry();
     let dynamic_op = DynamicDataOperator::new(name, operator, num_params);
 
-    if let Ok(mut ops) = registry.data_operators.write() {
-        ops.insert(name.to_string(), dynamic_op);
-    }
+    registry
+        .data_operators
+        .write()
+        .map_err(|_| Error::RegistryError {
+            reason: "Failed to acquire data operator registry lock".to_string(),
+        })?
+        .insert(name.to_string(), dynamic_op);
+
+    Ok(())
 }
 
 /// Remove a custom operation by name.
@@ -221,44 +251,78 @@ pub fn add_data_operation(name: &str, operator: DataOperatorFn, num_params: NumP
 /// * `name` - The name of the operator to remove
 ///
 /// # Returns
-/// * `true` if an operator was removed, `false` if no operator with that name was found
-pub fn remove_operation(name: &str) -> bool {
+/// * `Ok(true)` if an operator was removed, `Ok(false)` if no operator with that name was found
+/// * `Err(Error::RegistryError)` if lock acquisition failed
+pub fn remove_operation(name: &str) -> Result<bool, Error> {
     let registry = get_custom_operator_registry();
     let mut removed = false;
 
-    if let Ok(mut ops) = registry.operators.write() {
-        removed |= ops.remove(name).is_some();
-    }
+    removed |= registry
+        .operators
+        .write()
+        .map_err(|_| Error::RegistryError {
+            reason: "Failed to acquire operator registry lock".to_string(),
+        })?
+        .remove(name)
+        .is_some();
 
-    if let Ok(mut ops) = registry.lazy_operators.write() {
-        removed |= ops.remove(name).is_some();
-    }
+    removed |= registry
+        .lazy_operators
+        .write()
+        .map_err(|_| Error::RegistryError {
+            reason: "Failed to acquire lazy operator registry lock".to_string(),
+        })?
+        .remove(name)
+        .is_some();
 
-    if let Ok(mut ops) = registry.data_operators.write() {
-        removed |= ops.remove(name).is_some();
-    }
+    removed |= registry
+        .data_operators
+        .write()
+        .map_err(|_| Error::RegistryError {
+            reason: "Failed to acquire data operator registry lock".to_string(),
+        })?
+        .remove(name)
+        .is_some();
 
-    removed
+    Ok(removed)
 }
 
 /// Clear all custom operations.
 ///
 /// This function removes all dynamically registered operators, but does not
 /// affect built-in static operators.
-pub fn clear_operations() {
+///
+/// # Returns
+/// * `Ok(())` if all operations were cleared successfully
+/// * `Err(Error::RegistryError)` if lock acquisition failed
+pub fn clear_operations() -> Result<(), Error> {
     let registry = get_custom_operator_registry();
 
-    if let Ok(mut ops) = registry.operators.write() {
-        ops.clear();
-    }
+    registry
+        .operators
+        .write()
+        .map_err(|_| Error::RegistryError {
+            reason: "Failed to acquire operator registry lock".to_string(),
+        })?
+        .clear();
 
-    if let Ok(mut ops) = registry.lazy_operators.write() {
-        ops.clear();
-    }
+    registry
+        .lazy_operators
+        .write()
+        .map_err(|_| Error::RegistryError {
+            reason: "Failed to acquire lazy operator registry lock".to_string(),
+        })?
+        .clear();
 
-    if let Ok(mut ops) = registry.data_operators.write() {
-        ops.clear();
-    }
+    registry
+        .data_operators
+        .write()
+        .map_err(|_| Error::RegistryError {
+            reason: "Failed to acquire data operator registry lock".to_string(),
+        })?
+        .clear();
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1587,7 +1651,8 @@ mod jsonlogic_tests {
                 Ok(Value::Null)
             },
             NumParams::Exactly(1),
-        );
+        )
+        .unwrap();
 
         let result = apply(&json!({"double": [5]}), &json!({})).unwrap();
         assert_eq!(result, json!(10.0));
@@ -1609,7 +1674,8 @@ mod jsonlogic_tests {
                 Ok(Value::Null)
             },
             NumParams::AtLeast(1),
-        );
+        )
+        .unwrap();
 
         let result =
             apply(&json!({"first_truthy": [false, 0, 42, true]}), &json!({})).unwrap();
@@ -1627,7 +1693,8 @@ mod jsonlogic_tests {
                 Ok(Value::Null)
             },
             NumParams::Exactly(1),
-        );
+        )
+        .unwrap();
 
         let result =
             apply(&json!({"get_field": ["name"]}), &json!({"name": "test"})).unwrap();
@@ -1641,13 +1708,14 @@ mod jsonlogic_tests {
                 Ok(json!(false))
             },
             NumParams::Exactly(2),
-        );
+        )
+        .unwrap();
 
         let result = apply(&json!({"==": [1, 1]}), &json!({})).unwrap();
         assert_eq!(result, json!(false)); // Our custom operator overrides the built-in
 
         // Clean up
-        clear_operations();
+        clear_operations().unwrap();
 
         // After clearing, built-in operators should work again
         let result = apply(&json!({"==": [1, 1]}), &json!({})).unwrap();
@@ -1672,7 +1740,8 @@ mod jsonlogic_tests {
                 Ok(json!("success"))
             },
             NumParams::Exactly(1),
-        );
+        )
+        .unwrap();
 
         // Test successful case
         let result = apply(&json!({"test_error_unique": [1]}), &json!({})).unwrap();
@@ -1696,7 +1765,7 @@ mod jsonlogic_tests {
         }
 
         // Clean up
-        clear_operations();
+        clear_operations().unwrap();
     }
 
     #[test]
@@ -1712,7 +1781,8 @@ mod jsonlogic_tests {
                 }
             },
             NumParams::Exactly(2),
-        );
+        )
+        .unwrap();
 
         // Test correct argument count
         let result = apply(&json!({"test_two_args": [1, 2]}), &json!({})).unwrap();
@@ -1745,6 +1815,6 @@ mod jsonlogic_tests {
         }
 
         // Clean up
-        clear_operations();
+        clear_operations().unwrap();
     }
 }
