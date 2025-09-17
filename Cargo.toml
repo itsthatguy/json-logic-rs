@@ -23,6 +23,10 @@ name = "jsonlogic"
 path = "src/bin.rs"
 required-features = ["cmdline"]
 
+[[example]]
+name = "custom_operators"
+path = "examples/custom_operators.rs"
+
 [features]
 cmdline = ["anyhow", "clap"]
 default = []

@@ -11,7 +11,9 @@
 
 use phf::phf_map;
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 use std::fmt;
+use std::sync::{Once, RwLock};
 
 use crate::error::Error;
 use crate::value::to_number_value;
@@ -229,6 +231,35 @@ pub const LAZY_OPERATOR_MAP: phf::Map<&'static str, LazyOperator> = phf_map! {
     },
 };
 
+/// Registry for dynamically registered custom operators
+pub struct CustomOperatorRegistry {
+    pub operators: RwLock<HashMap<String, DynamicOperator>>,
+    pub lazy_operators: RwLock<HashMap<String, DynamicLazyOperator>>,
+    pub data_operators: RwLock<HashMap<String, DynamicDataOperator>>,
+}
+
+impl CustomOperatorRegistry {
+    fn new() -> Self {
+        Self {
+            operators: RwLock::new(HashMap::new()),
+            lazy_operators: RwLock::new(HashMap::new()),
+            data_operators: RwLock::new(HashMap::new()),
+        }
+    }
+}
+
+static CUSTOM_OPERATOR_REGISTRY_INIT: Once = Once::new();
+static mut CUSTOM_OPERATOR_REGISTRY: Option<CustomOperatorRegistry> = None;
+
+pub fn get_custom_operator_registry() -> &'static CustomOperatorRegistry {
+    unsafe {
+        CUSTOM_OPERATOR_REGISTRY_INIT.call_once(|| {
+            CUSTOM_OPERATOR_REGISTRY = Some(CustomOperatorRegistry::new());
+        });
+        CUSTOM_OPERATOR_REGISTRY.as_ref().unwrap()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum NumParams {
     None,
@@ -279,12 +310,40 @@ pub struct Operator {
     operator: OperatorFn,
     num_params: NumParams,
 }
+
+/// Dynamic version of Operator that can be stored in HashMap
+#[derive(Clone, Debug)]
+pub struct DynamicOperator {
+    symbol: String,
+    operator: OperatorFn,
+    num_params: NumParams,
+}
 impl Operator {
     pub fn execute(&self, items: &Vec<&Value>) -> Result<Value, Error> {
         (self.operator)(items)
     }
 }
+
+impl DynamicOperator {
+    pub fn new(symbol: &str, operator: OperatorFn, num_params: NumParams) -> Self {
+        Self {
+            symbol: symbol.to_string(),
+            operator,
+            num_params,
+        }
+    }
+
+    pub fn execute(&self, items: &Vec<&Value>) -> Result<Value, Error> {
+        (self.operator)(items)
+    }
+}
 impl CommonOperator for Operator {
+    fn param_info(&self) -> &NumParams {
+        &self.num_params
+    }
+}
+
+impl CommonOperator for DynamicOperator {
     fn param_info(&self) -> &NumParams {
         &self.num_params
     }
@@ -303,12 +362,40 @@ pub struct LazyOperator {
     operator: LazyOperatorFn,
     num_params: NumParams,
 }
+
+/// Dynamic version of LazyOperator that can be stored in HashMap
+#[derive(Clone, Debug)]
+pub struct DynamicLazyOperator {
+    symbol: String,
+    operator: LazyOperatorFn,
+    num_params: NumParams,
+}
 impl LazyOperator {
     pub fn execute(&self, data: &Value, items: &Vec<&Value>) -> Result<Value, Error> {
         (self.operator)(data, items)
     }
 }
+
+impl DynamicLazyOperator {
+    pub fn new(symbol: &str, operator: LazyOperatorFn, num_params: NumParams) -> Self {
+        Self {
+            symbol: symbol.to_string(),
+            operator,
+            num_params,
+        }
+    }
+
+    pub fn execute(&self, data: &Value, items: &Vec<&Value>) -> Result<Value, Error> {
+        (self.operator)(data, items)
+    }
+}
 impl CommonOperator for LazyOperator {
+    fn param_info(&self) -> &NumParams {
+        &self.num_params
+    }
+}
+
+impl CommonOperator for DynamicLazyOperator {
     fn param_info(&self) -> &NumParams {
         &self.num_params
     }
@@ -332,12 +419,40 @@ pub struct DataOperator {
     operator: DataOperatorFn,
     num_params: NumParams,
 }
+
+/// Dynamic version of DataOperator that can be stored in HashMap
+#[derive(Clone, Debug)]
+pub struct DynamicDataOperator {
+    symbol: String,
+    operator: DataOperatorFn,
+    num_params: NumParams,
+}
 impl DataOperator {
     pub fn execute(&self, data: &Value, items: &Vec<&Value>) -> Result<Value, Error> {
         (self.operator)(data, items)
     }
 }
+
+impl DynamicDataOperator {
+    pub fn new(symbol: &str, operator: DataOperatorFn, num_params: NumParams) -> Self {
+        Self {
+            symbol: symbol.to_string(),
+            operator,
+            num_params,
+        }
+    }
+
+    pub fn execute(&self, data: &Value, items: &Vec<&Value>) -> Result<Value, Error> {
+        (self.operator)(data, items)
+    }
+}
 impl CommonOperator for DataOperator {
+    fn param_info(&self) -> &NumParams {
+        &self.num_params
+    }
+}
+
+impl CommonOperator for DynamicDataOperator {
     fn param_info(&self) -> &NumParams {
         &self.num_params
     }
@@ -351,132 +466,238 @@ impl fmt::Debug for DataOperator {
     }
 }
 
-type OperatorFn = fn(&Vec<&Value>) -> Result<Value, Error>;
-type LazyOperatorFn = fn(&Value, &Vec<&Value>) -> Result<Value, Error>;
-type DataOperatorFn = fn(&Value, &Vec<&Value>) -> Result<Value, Error>;
+pub type OperatorFn = fn(&Vec<&Value>) -> Result<Value, Error>;
+pub type LazyOperatorFn = fn(&Value, &Vec<&Value>) -> Result<Value, Error>;
+pub type DataOperatorFn = fn(&Value, &Vec<&Value>) -> Result<Value, Error>;
 
 /// An operation that doesn't do any recursive parsing or evaluation.
 ///
 /// Any operator functions used must handle parsing of values themselves.
 #[derive(Debug)]
-pub struct LazyOperation<'a> {
-    operator: &'a LazyOperator,
-    arguments: Vec<Value>,
+pub enum LazyOperation<'a> {
+    Static {
+        operator: &'a LazyOperator,
+        arguments: Vec<Value>,
+    },
+    Dynamic {
+        operator: DynamicLazyOperator,
+        arguments: Vec<Value>,
+    },
 }
 impl<'a> Parser<'a> for LazyOperation<'a> {
     fn from_value(value: &'a Value) -> Result<Option<Self>, Error> {
-        op_from_map(&LAZY_OPERATOR_MAP, value).and_then(|opt| {
-            opt.map(|op| {
-                Ok(LazyOperation {
-                    operator: op.op,
-                    arguments: op.args.into_iter().map(|v| v.clone()).collect(),
-                })
-            })
-            .transpose()
-        })
+        let registry = get_custom_operator_registry();
+
+        match op_from_static_and_dynamic(
+            &LAZY_OPERATOR_MAP,
+            &registry.lazy_operators,
+            value,
+        )? {
+            Some(Either::Left(op)) => Ok(Some(LazyOperation::Static {
+                operator: op.op,
+                arguments: op.args.into_iter().map(|v| v.clone()).collect(),
+            })),
+            Some(Either::Right(op)) => Ok(Some(LazyOperation::Dynamic {
+                operator: op.op,
+                arguments: op.args.into_iter().map(|v| v.clone()).collect(),
+            })),
+            None => Ok(None),
+        }
     }
 
     fn evaluate(&self, data: &'a Value) -> Result<Evaluated, Error> {
-        self.operator
-            .execute(data, &self.arguments.iter().collect())
-            .map(Evaluated::New)
+        match self {
+            LazyOperation::Static {
+                operator,
+                arguments,
+            } => operator.execute(data, &arguments.iter().collect()),
+            LazyOperation::Dynamic {
+                operator,
+                arguments,
+            } => operator.execute(data, &arguments.iter().collect()),
+        }
+        .map(Evaluated::New)
     }
 }
 
 impl From<LazyOperation<'_>> for Value {
     fn from(op: LazyOperation) -> Value {
         let mut rv = Map::with_capacity(1);
-        rv.insert(
-            op.operator.symbol.into(),
-            Value::Array(op.arguments.clone()),
-        );
+        match op {
+            LazyOperation::Static {
+                operator,
+                arguments,
+            } => {
+                rv.insert(operator.symbol.into(), Value::Array(arguments));
+            }
+            LazyOperation::Dynamic {
+                operator,
+                arguments,
+            } => {
+                rv.insert(operator.symbol.clone(), Value::Array(arguments));
+            }
+        }
         Value::Object(rv)
     }
 }
 
 #[derive(Debug)]
-pub struct Operation<'a> {
-    operator: &'a Operator,
-    arguments: Vec<Parsed<'a>>,
+pub enum Operation<'a> {
+    Static {
+        operator: &'a Operator,
+        arguments: Vec<Parsed<'a>>,
+    },
+    Dynamic {
+        operator: DynamicOperator,
+        arguments: Vec<Parsed<'a>>,
+    },
 }
 impl<'a> Parser<'a> for Operation<'a> {
     fn from_value(value: &'a Value) -> Result<Option<Self>, Error> {
-        op_from_map(&OPERATOR_MAP, value).and_then(|opt| {
-            opt.map(|op| {
-                Ok(Operation {
-                    operator: op.op,
-                    arguments: Parsed::from_values(op.args)?,
-                })
-            })
-            .transpose()
-        })
+        let registry = get_custom_operator_registry();
+
+        match op_from_static_and_dynamic(&OPERATOR_MAP, &registry.operators, value)? {
+            Some(Either::Left(op)) => Ok(Some(Operation::Static {
+                operator: op.op,
+                arguments: Parsed::from_values(op.args)?,
+            })),
+            Some(Either::Right(op)) => Ok(Some(Operation::Dynamic {
+                operator: op.op,
+                arguments: Parsed::from_values(op.args)?,
+            })),
+            None => Ok(None),
+        }
     }
 
     /// Evaluate the operation after recursively evaluating any nested operations
     fn evaluate(&self, data: &'a Value) -> Result<Evaluated, Error> {
-        let arguments = self
-            .arguments
-            .iter()
-            .map(|value| value.evaluate(data).map(Value::from))
-            .collect::<Result<Vec<Value>, Error>>()?;
-        self.operator
-            .execute(&arguments.iter().collect())
-            .map(Evaluated::New)
+        let arguments = match self {
+            Operation::Static { arguments, .. }
+            | Operation::Dynamic { arguments, .. } => arguments,
+        }
+        .iter()
+        .map(|value| value.evaluate(data).map(Value::from))
+        .collect::<Result<Vec<Value>, Error>>()?;
+
+        match self {
+            Operation::Static { operator, .. } => {
+                operator.execute(&arguments.iter().collect())
+            }
+            Operation::Dynamic { operator, .. } => {
+                operator.execute(&arguments.iter().collect())
+            }
+        }
+        .map(Evaluated::New)
     }
 }
 
 impl From<Operation<'_>> for Value {
     fn from(op: Operation) -> Value {
         let mut rv = Map::with_capacity(1);
-        let values = op
-            .arguments
-            .into_iter()
-            .map(Value::from)
-            .collect::<Vec<Value>>();
-        rv.insert(op.operator.symbol.into(), Value::Array(values));
+        match op {
+            Operation::Static {
+                operator,
+                arguments,
+            } => {
+                let values = arguments
+                    .into_iter()
+                    .map(Value::from)
+                    .collect::<Vec<Value>>();
+                rv.insert(operator.symbol.into(), Value::Array(values));
+            }
+            Operation::Dynamic {
+                operator,
+                arguments,
+            } => {
+                let values = arguments
+                    .into_iter()
+                    .map(Value::from)
+                    .collect::<Vec<Value>>();
+                rv.insert(operator.symbol.clone(), Value::Array(values));
+            }
+        }
         Value::Object(rv)
     }
 }
 
 #[derive(Debug)]
-pub struct DataOperation<'a> {
-    operator: &'a DataOperator,
-    arguments: Vec<Parsed<'a>>,
+pub enum DataOperation<'a> {
+    Static {
+        operator: &'a DataOperator,
+        arguments: Vec<Parsed<'a>>,
+    },
+    Dynamic {
+        operator: DynamicDataOperator,
+        arguments: Vec<Parsed<'a>>,
+    },
 }
 impl<'a> Parser<'a> for DataOperation<'a> {
     fn from_value(value: &'a Value) -> Result<Option<Self>, Error> {
-        op_from_map(&DATA_OPERATOR_MAP, value).and_then(|opt| {
-            opt.map(|op| {
-                Ok(DataOperation {
-                    operator: op.op,
-                    arguments: Parsed::from_values(op.args)?,
-                })
-            })
-            .transpose()
-        })
+        let registry = get_custom_operator_registry();
+
+        match op_from_static_and_dynamic(
+            &DATA_OPERATOR_MAP,
+            &registry.data_operators,
+            value,
+        )? {
+            Some(Either::Left(op)) => Ok(Some(DataOperation::Static {
+                operator: op.op,
+                arguments: Parsed::from_values(op.args)?,
+            })),
+            Some(Either::Right(op)) => Ok(Some(DataOperation::Dynamic {
+                operator: op.op,
+                arguments: Parsed::from_values(op.args)?,
+            })),
+            None => Ok(None),
+        }
     }
 
     /// Evaluate the operation after recursively evaluating any nested operations
     fn evaluate(&self, data: &'a Value) -> Result<Evaluated, Error> {
-        let arguments = self
-            .arguments
-            .iter()
-            .map(|value| value.evaluate(data).map(Value::from))
-            .collect::<Result<Vec<Value>, Error>>()?;
-        self.operator
-            .execute(data, &arguments.iter().collect())
-            .map(Evaluated::New)
+        let arguments = match self {
+            DataOperation::Static { arguments, .. }
+            | DataOperation::Dynamic { arguments, .. } => arguments,
+        }
+        .iter()
+        .map(|value| value.evaluate(data).map(Value::from))
+        .collect::<Result<Vec<Value>, Error>>()?;
+
+        match self {
+            DataOperation::Static { operator, .. } => {
+                operator.execute(data, &arguments.iter().collect())
+            }
+            DataOperation::Dynamic { operator, .. } => {
+                operator.execute(data, &arguments.iter().collect())
+            }
+        }
+        .map(Evaluated::New)
     }
 }
 impl From<DataOperation<'_>> for Value {
     fn from(op: DataOperation) -> Value {
         let mut rv = Map::with_capacity(1);
-        let values = op
-            .arguments
-            .into_iter()
-            .map(Value::from)
-            .collect::<Vec<Value>>();
-        rv.insert(op.operator.symbol.into(), Value::Array(values));
+        match op {
+            DataOperation::Static {
+                operator,
+                arguments,
+            } => {
+                let values = arguments
+                    .into_iter()
+                    .map(Value::from)
+                    .collect::<Vec<Value>>();
+                rv.insert(operator.symbol.into(), Value::Array(values));
+            }
+            DataOperation::Dynamic {
+                operator,
+                arguments,
+            } => {
+                let values = arguments
+                    .into_iter()
+                    .map(Value::from)
+                    .collect::<Vec<Value>>();
+                rv.insert(operator.symbol.clone(), Value::Array(values));
+            }
+        }
         Value::Object(rv)
     }
 }
@@ -484,6 +705,105 @@ impl From<DataOperation<'_>> for Value {
 struct OpArgs<'a, 'b, T> {
     op: &'a T,
     args: Vec<&'b Value>,
+}
+
+struct DynamicOpArgs<'b, T> {
+    op: T,
+    args: Vec<&'b Value>,
+}
+
+/// Enhanced lookup that checks both static PHF maps and dynamic HashMaps
+fn op_from_static_and_dynamic<'a, 'b, T, D>(
+    static_map: &'a phf::Map<&'static str, T>,
+    dynamic_map: &'a RwLock<HashMap<String, D>>,
+    value: &'b Value,
+) -> Result<Option<Either<OpArgs<'a, 'b, T>, DynamicOpArgs<'b, D>>>, Error>
+where
+    T: CommonOperator,
+    D: CommonOperator + Clone,
+{
+    let obj = match value {
+        Value::Object(obj) => obj,
+        _ => return Ok(None),
+    };
+    // With just one key.
+    if obj.len() != 1 {
+        return Ok(None);
+    };
+
+    // We've already validated the length to be one, so any error
+    // here is super unexpected.
+    let key = obj.keys().next().ok_or_else(|| {
+        Error::UnexpectedError(format!(
+            "could not get first key from len(1) object: {:?}",
+            obj
+        ))
+    })?;
+    let val = obj.get(key).ok_or_else(|| {
+        Error::UnexpectedError(format!(
+            "could not get value for key '{}' from len(1) object: {:?}",
+            key, obj
+        ))
+    })?;
+
+    // First check dynamic operators (they take precedence)
+    let dynamic_ops = dynamic_map.read().map_err(|_| {
+        Error::UnexpectedError(
+            "Failed to acquire read lock on dynamic operators".to_string(),
+        )
+    })?;
+
+    if let Some(op) = dynamic_ops.get(key) {
+        let param_info = op.param_info();
+        let args = extract_args(val, param_info, key)?;
+        return Ok(Some(Either::Right(DynamicOpArgs {
+            op: op.clone(),
+            args,
+        })));
+    }
+
+    drop(dynamic_ops); // Release the lock early
+
+    // Then check static operators
+    if let Some(op) = static_map.get(key.as_str()) {
+        let param_info = op.param_info();
+        let args = extract_args(val, param_info, key)?;
+        return Ok(Some(Either::Left(OpArgs { op, args })));
+    }
+
+    Ok(None)
+}
+
+fn extract_args<'a>(
+    val: &'a Value,
+    param_info: &NumParams,
+    key: &str,
+) -> Result<Vec<&'a Value>, Error> {
+    let err_for_non_unary = || {
+        Err(Error::InvalidOperation {
+            key: key.to_string(),
+            reason: "Arguments to non-unary operations must be arrays".into(),
+        })
+    };
+
+    // If args value is not an array, and the operator is unary,
+    // the value is treated as a unary argument array.
+    let args = match val {
+        Value::Array(args) => args.iter().collect::<Vec<&Value>>(),
+        _ => match param_info.can_accept_unary() {
+            true => vec![val],
+            false => return err_for_non_unary(),
+        },
+    };
+
+    param_info.check_len(&args.len())?;
+    Ok(args)
+}
+
+/// Helper enum to handle either static or dynamic operator results
+enum Either<L, R> {
+    Left(L),
+    Right(R),
 }
 
 fn op_from_map<'a, 'b, T: CommonOperator>(

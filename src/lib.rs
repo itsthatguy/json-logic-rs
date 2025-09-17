@@ -8,6 +8,8 @@ mod op;
 mod value;
 
 use error::Error;
+use op::{DataOperatorFn, DynamicDataOperator, DynamicLazyOperator, DynamicOperator, LazyOperatorFn, OperatorFn, get_custom_operator_registry};
+pub use op::NumParams;
 use value::{Evaluated, Parsed};
 
 const NULL: Value = Value::Null;
@@ -87,6 +89,156 @@ pub mod python_iface {
 pub fn apply(value: &Value, data: &Value) -> Result<Value, Error> {
     let parsed = Parsed::from_value(&value)?;
     parsed.evaluate(data).map(Value::from)
+}
+
+/// Add a custom operation that can be used in JsonLogic rules.
+///
+/// This function allows you to register custom operators at runtime that will be
+/// available for evaluation. Dynamic operators take precedence over static ones
+/// if they share the same name.
+///
+/// # Arguments
+/// * `name` - The name of the operator (e.g., "my_op")
+/// * `operator` - The function that implements the operator logic
+/// * `num_params` - Parameter validation rules for the operator
+///
+/// # Example
+/// ```
+/// use jsonlogic_rs::{add_operation, NumParams};
+/// use serde_json::{json, Value};
+///
+/// // Register a custom "double" operation
+/// add_operation("double", |args| {
+///     if let Some(Value::Number(n)) = args.first() {
+///         if let Some(num) = n.as_f64() {
+///             return Ok(json!(num * 2.0));
+///         }
+///     }
+///     Ok(Value::Null)
+/// }, NumParams::Exactly(1));
+/// ```
+pub fn add_operation(name: &str, operator: OperatorFn, num_params: NumParams) {
+    let registry = get_custom_operator_registry();
+    let dynamic_op = DynamicOperator::new(name, operator, num_params);
+
+    if let Ok(mut ops) = registry.operators.write() {
+        ops.insert(name.to_string(), dynamic_op);
+    }
+}
+
+/// Add a custom lazy operation that can be used in JsonLogic rules.
+///
+/// Lazy operators receive the data context and unevaluated arguments,
+/// allowing them to control evaluation flow (like `if`, `and`, `or`).
+///
+/// # Arguments
+/// * `name` - The name of the operator (e.g., "my_lazy_op")
+/// * `operator` - The function that implements the operator logic
+/// * `num_params` - Parameter validation rules for the operator
+///
+/// # Example
+/// ```
+/// use jsonlogic_rs::{add_lazy_operation, NumParams};
+/// use serde_json::{json, Value};
+///
+/// // Register a custom "debug" operation that logs and returns the first argument
+/// add_lazy_operation("debug", |data, args| {
+///     println!("Debug: data={:?}, args={:?}", data, args);
+///     Ok(args.first().map(|v| (*v).clone()).unwrap_or(Value::Null))
+/// }, NumParams::AtLeast(1));
+/// ```
+pub fn add_lazy_operation(name: &str, operator: LazyOperatorFn, num_params: NumParams) {
+    let registry = get_custom_operator_registry();
+    let dynamic_op = DynamicLazyOperator::new(name, operator, num_params);
+
+    if let Ok(mut ops) = registry.lazy_operators.write() {
+        ops.insert(name.to_string(), dynamic_op);
+    }
+}
+
+/// Add a custom data operation that can be used in JsonLogic rules.
+///
+/// Data operators receive both the data context and arguments, similar to
+/// lazy operators, but are used for data access patterns (like `var`, `missing`).
+///
+/// # Arguments
+/// * `name` - The name of the operator (e.g., "my_data_op")
+/// * `operator` - The function that implements the operator logic
+/// * `num_params` - Parameter validation rules for the operator
+///
+/// # Example
+/// ```
+/// use jsonlogic_rs::{add_data_operation, NumParams};
+/// use serde_json::{json, Value};
+///
+/// // Register a custom "env" operation that reads environment variables
+/// add_data_operation("env", |_data, args| {
+///     if let Some(Value::String(var_name)) = args.first() {
+///         match std::env::var(var_name) {
+///             Ok(value) => Ok(json!(value)),
+///             Err(_) => Ok(Value::Null),
+///         }
+///     } else {
+///         Ok(Value::Null)
+///     }
+/// }, NumParams::Exactly(1));
+/// ```
+pub fn add_data_operation(name: &str, operator: DataOperatorFn, num_params: NumParams) {
+    let registry = get_custom_operator_registry();
+    let dynamic_op = DynamicDataOperator::new(name, operator, num_params);
+
+    if let Ok(mut ops) = registry.data_operators.write() {
+        ops.insert(name.to_string(), dynamic_op);
+    }
+}
+
+/// Remove a custom operation by name.
+///
+/// This function removes a dynamically registered operator from all operator maps.
+/// It will not affect built-in static operators.
+///
+/// # Arguments
+/// * `name` - The name of the operator to remove
+///
+/// # Returns
+/// * `true` if an operator was removed, `false` if no operator with that name was found
+pub fn remove_operation(name: &str) -> bool {
+    let registry = get_custom_operator_registry();
+    let mut removed = false;
+
+    if let Ok(mut ops) = registry.operators.write() {
+        removed |= ops.remove(name).is_some();
+    }
+
+    if let Ok(mut ops) = registry.lazy_operators.write() {
+        removed |= ops.remove(name).is_some();
+    }
+
+    if let Ok(mut ops) = registry.data_operators.write() {
+        removed |= ops.remove(name).is_some();
+    }
+
+    removed
+}
+
+/// Clear all custom operations.
+///
+/// This function removes all dynamically registered operators, but does not
+/// affect built-in static operators.
+pub fn clear_operations() {
+    let registry = get_custom_operator_registry();
+
+    if let Ok(mut ops) = registry.operators.write() {
+        ops.clear();
+    }
+
+    if let Ok(mut ops) = registry.lazy_operators.write() {
+        ops.clear();
+    }
+
+    if let Ok(mut ops) = registry.data_operators.write() {
+        ops.clear();
+    }
 }
 
 #[cfg(test)]
@@ -1399,5 +1551,68 @@ mod jsonlogic_tests {
     #[test]
     fn test_in_op() {
         in_cases().into_iter().for_each(assert_jsonlogic)
+    }
+
+    #[test]
+    fn test_custom_operations() {
+        // Test custom regular operation
+        add_operation("double", |args| {
+            if let Some(Value::Number(n)) = args.first() {
+                if let Some(num) = n.as_f64() {
+                    return Ok(json!(num * 2.0));
+                }
+            }
+            Ok(Value::Null)
+        }, NumParams::Exactly(1));
+
+        let result = apply(&json!({"double": [5]}), &json!({})).unwrap();
+        assert_eq!(result, json!(10.0));
+
+        // Test custom lazy operation
+        add_lazy_operation("first_truthy", |_data, args| {
+            for arg in args {
+                if let Value::Bool(true) = arg {
+                    return Ok(json!(true));
+                }
+                if let Value::Number(n) = arg {
+                    if n.as_f64().unwrap_or(0.0) != 0.0 {
+                        return Ok((*arg).clone());
+                    }
+                }
+            }
+            Ok(Value::Null)
+        }, NumParams::AtLeast(1));
+
+        let result = apply(&json!({"first_truthy": [false, 0, 42, true]}), &json!({})).unwrap();
+        assert_eq!(result, json!(42));
+
+        // Test custom data operation
+        add_data_operation("get_field", |data, args| {
+            if let Some(Value::String(field)) = args.first() {
+                if let Value::Object(obj) = data {
+                    return Ok(obj.get(field).cloned().unwrap_or(Value::Null));
+                }
+            }
+            Ok(Value::Null)
+        }, NumParams::Exactly(1));
+
+        let result = apply(&json!({"get_field": ["name"]}), &json!({"name": "test"})).unwrap();
+        assert_eq!(result, json!("test"));
+
+        // Test overriding built-in operators
+        add_operation("==", |args| {
+            // Custom equality that always returns false
+            Ok(json!(false))
+        }, NumParams::Exactly(2));
+
+        let result = apply(&json!({"==": [1, 1]}), &json!({})).unwrap();
+        assert_eq!(result, json!(false)); // Our custom operator overrides the built-in
+
+        // Clean up
+        clear_operations();
+
+        // After clearing, built-in operators should work again
+        let result = apply(&json!({"==": [1, 1]}), &json!({})).unwrap();
+        assert_eq!(result, json!(true));
     }
 }

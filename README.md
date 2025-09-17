@@ -93,6 +93,44 @@ fn main() {
 }
 ```
 
+#### Custom Operations
+
+You can add your own operations at runtime using the `add_operation`, `add_lazy_operation`, and `add_data_operation` functions:
+
+```rust
+use jsonlogic_rs::{add_operation, apply, NumParams};
+use serde_json::{json, Value};
+
+fn main() {
+    // Add a custom "double" operation
+    add_operation("double", |args| {
+        if let Some(Value::Number(n)) = args.first() {
+            if let Some(num) = n.as_f64() {
+                return Ok(json!(num * 2.0));
+            }
+        }
+        Ok(Value::Null)
+    }, NumParams::Exactly(1));
+
+    // Use the custom operation in a rule
+    let result = apply(&json!({"double": [21]}), &json!({})).unwrap();
+    assert_eq!(result, json!(42.0));
+
+    // Custom operations take precedence over built-in ones
+    add_operation("==", |_args| Ok(json!("custom!")), NumParams::Exactly(2));
+    let result = apply(&json!({"==": [1, 1]}), &json!({})).unwrap();
+    assert_eq!(result, json!("custom!"));
+}
+```
+
+Three types of custom operations are supported:
+
+- **Regular Operations** (`add_operation`): Receive evaluated arguments, like built-in arithmetic operators
+- **Lazy Operations** (`add_lazy_operation`): Receive data context and unevaluated arguments, allowing control over evaluation flow (like `if`, `and`, `or`)
+- **Data Operations** (`add_data_operation`): Similar to lazy operations but designed for data access patterns (like `var`, `missing`)
+
+See the [examples/custom_operators.rs](examples/custom_operators.rs) file for more comprehensive examples.
+
 ### Javascript
 
 ```js
