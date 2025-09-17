@@ -1698,4 +1698,53 @@ mod jsonlogic_tests {
         // Clean up
         clear_operations();
     }
+
+    #[test]
+    fn test_wrong_argument_count_error() {
+        // Register an operation that expects exactly 2 arguments
+        add_operation(
+            "test_two_args",
+            |args| {
+                if args.len() == 2 {
+                    Ok(json!("success"))
+                } else {
+                    panic!("Should not reach here - NumParams should validate first")
+                }
+            },
+            NumParams::Exactly(2),
+        );
+
+        // Test correct argument count
+        let result = apply(&json!({"test_two_args": [1, 2]}), &json!({})).unwrap();
+        assert_eq!(result, json!("success"));
+
+        // Test wrong argument count - too few
+        match apply(&json!({"test_two_args": [1]}), &json!({})) {
+            Ok(_) => panic!("Should have failed with wrong argument count!"),
+            Err(Error::WrongArgumentCount { expected, actual }) => {
+                assert_eq!(actual, 1);
+                match expected {
+                    NumParams::Exactly(n) => assert_eq!(n, 2),
+                    _ => panic!("Expected NumParams::Exactly(2)"),
+                }
+            }
+            Err(e) => panic!("Wrong error type: {:?}", e),
+        }
+
+        // Test wrong argument count - too many
+        match apply(&json!({"test_two_args": [1, 2, 3]}), &json!({})) {
+            Ok(_) => panic!("Should have failed with wrong argument count!"),
+            Err(Error::WrongArgumentCount { expected, actual }) => {
+                assert_eq!(actual, 3);
+                match expected {
+                    NumParams::Exactly(n) => assert_eq!(n, 2),
+                    _ => panic!("Expected NumParams::Exactly(2)"),
+                }
+            }
+            Err(e) => panic!("Wrong error type: {:?}", e),
+        }
+
+        // Clean up
+        clear_operations();
+    }
 }

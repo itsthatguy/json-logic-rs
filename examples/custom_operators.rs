@@ -231,6 +231,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => println!("  Caught expected error: {}", e),
     }
 
+    // 8. Demonstrate parameter validation
+    println!("8. Demonstrating parameter validation...");
+
+    // Add an operation that requires exactly 2 arguments
+    add_operation(
+        "multiply",
+        |args| {
+            // We can assume args.len() == 2 because NumParams::Exactly(2) validates this
+            if let (Some(Value::Number(a)), Some(Value::Number(b))) =
+                (args.get(0), args.get(1))
+            {
+                if let (Some(x), Some(y)) = (a.as_f64(), b.as_f64()) {
+                    return Ok(json!(x * y));
+                }
+            }
+            Ok(Value::Null)
+        },
+        NumParams::Exactly(2),
+    );
+
+    // Test correct usage
+    let result = apply(&json!({"multiply": [3, 4]}), &json!({}))?;
+    println!("  Rule: {{\"multiply\": [3, 4]}} -> {}", result);
+
+    // Test parameter validation - wrong argument count
+    match apply(&json!({"multiply": [3]}), &json!({})) {
+        Ok(_) => println!("  ERROR: Should have failed with wrong argument count!"),
+        Err(Error::WrongArgumentCount { expected, actual }) => {
+            println!(
+                "  Caught parameter validation error: expected {:?}, got {}",
+                expected, actual
+            );
+        }
+        Err(e) => println!("  Caught unexpected error: {}", e),
+    }
+
     println!("\n=== Demo Complete ===");
     Ok(())
 }

@@ -163,6 +163,17 @@ Err(Error::InvalidArgument {
 })
 ```
 
+**Automatic Parameter Validation**: The `NumParams` specification automatically validates argument counts. If users call your custom operation with the wrong number of arguments, they'll receive a `WrongArgumentCount` error before your function is called:
+
+```rust
+match apply(&json!({"my_op": [1]}), &json!({})) {
+    Err(Error::WrongArgumentCount { expected, actual }) => {
+        println!("Expected {:?} arguments, got {}", expected, actual);
+    }
+    _ => {}
+}
+```
+
 See the [examples/custom_operators.rs](examples/custom_operators.rs) file for more comprehensive examples.
 
 ### Javascript
