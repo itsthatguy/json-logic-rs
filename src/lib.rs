@@ -7,14 +7,19 @@ pub mod js_op;
 mod op;
 mod value;
 
-use error::Error;
+pub use error::Error;
+use op::{
+    get_custom_operator_registry, DynamicDataOperator, DynamicLazyOperator,
+    DynamicOperator,
+};
+pub use op::{DataOperatorFn, LazyOperatorFn, NumParams, OperatorFn};
 use value::{Evaluated, Parsed};
 
 const NULL: Value = Value::Null;
 
 trait Parser<'a>: Sized + Into<Value> {
-    fn from_value(value: &'a Value) -> Result<Option<Self>, Error>;
-    fn evaluate(&self, data: &'a Value) -> Result<Evaluated, Error>;
+    fn from_value(value: &'a Value) -> Result<Option<Self>, error::Error>;
+    fn evaluate(&self, data: &'a Value) -> Result<Evaluated, error::Error>;
 }
 
 #[cfg(feature = "wasm")]
@@ -84,9 +89,240 @@ pub mod python_iface {
 
 /// Run JSONLogic for the given operation and data.
 ///
-pub fn apply(value: &Value, data: &Value) -> Result<Value, Error> {
+pub fn apply(value: &Value, data: &Value) -> Result<Value, error::Error> {
     let parsed = Parsed::from_value(&value)?;
     parsed.evaluate(data).map(Value::from)
+}
+
+/// Add a custom operation that can be used in JsonLogic rules.
+///
+/// This function allows you to register custom operators at runtime that will be
+/// available for evaluation. Dynamic operators take precedence over static ones
+/// if they share the same name.
+///
+/// # Arguments
+/// * `name` - The name of the operator (e.g., "my_op")
+/// * `operator` - The function that implements the operator logic
+/// * `num_params` - Parameter validation rules for the operator
+///
+/// # Example
+/// ```
+/// use jsonlogic_rs::{add_operation, NumParams, Error};
+/// use serde_json::{json, Value};
+///
+/// // Register a custom "double" operation with proper error handling
+/// add_operation("double", |args| {
+///     match args.first() {
+///         Some(Value::Number(n)) => {
+///             if let Some(num) = n.as_f64() {
+///                 Ok(json!(num * 2.0))
+///             } else {
+///                 Err(Error::InvalidArgument {
+///                     value: (*n).clone().into(),
+///                     operation: "double".to_string(),
+///                     reason: "Number cannot be converted to f64".to_string(),
+///                 })
+///             }
+///         }
+///         Some(other) => Err(Error::InvalidArgument {
+///             value: other.clone(),
+///             operation: "double".to_string(),
+///             reason: "Expected a number".to_string(),
+///         }),
+///         None => Err(Error::InvalidArgument {
+///             value: Value::Null,
+///             operation: "double".to_string(),
+///             reason: "Missing required argument".to_string(),
+///         }),
+///     }
+/// }, NumParams::Exactly(1));
+/// ```
+pub fn add_operation(
+    name: &str,
+    operator: OperatorFn,
+    num_params: NumParams,
+) -> Result<(), Error> {
+    let registry = get_custom_operator_registry();
+    let dynamic_op = DynamicOperator::new(name, operator, num_params);
+
+    registry
+        .operators
+        .write()
+        .map_err(|_| Error::RegistryError {
+            reason: "Failed to acquire operator registry lock".to_string(),
+        })?
+        .insert(name.to_string(), dynamic_op);
+
+    Ok(())
+}
+
+/// Add a custom lazy operation that can be used in JsonLogic rules.
+///
+/// Lazy operators receive the data context and unevaluated arguments,
+/// allowing them to control evaluation flow (like `if`, `and`, `or`).
+///
+/// # Arguments
+/// * `name` - The name of the operator (e.g., "my_lazy_op")
+/// * `operator` - The function that implements the operator logic
+/// * `num_params` - Parameter validation rules for the operator
+///
+/// # Example
+/// ```
+/// use jsonlogic_rs::{add_lazy_operation, NumParams};
+/// use serde_json::{json, Value};
+///
+/// // Register a custom "debug" operation that logs and returns the first argument
+/// add_lazy_operation("debug", |data, args| {
+///     println!("Debug: data={:?}, args={:?}", data, args);
+///     Ok(args.first().map(|v| (*v).clone()).unwrap_or(Value::Null))
+/// }, NumParams::AtLeast(1));
+/// ```
+pub fn add_lazy_operation(
+    name: &str,
+    operator: LazyOperatorFn,
+    num_params: NumParams,
+) -> Result<(), Error> {
+    let registry = get_custom_operator_registry();
+    let dynamic_op = DynamicLazyOperator::new(name, operator, num_params);
+
+    registry
+        .lazy_operators
+        .write()
+        .map_err(|_| Error::RegistryError {
+            reason: "Failed to acquire lazy operator registry lock".to_string(),
+        })?
+        .insert(name.to_string(), dynamic_op);
+
+    Ok(())
+}
+
+/// Add a custom data operation that can be used in JsonLogic rules.
+///
+/// Data operators receive both the data context and arguments, similar to
+/// lazy operators, but are used for data access patterns (like `var`, `missing`).
+///
+/// # Arguments
+/// * `name` - The name of the operator (e.g., "my_data_op")
+/// * `operator` - The function that implements the operator logic
+/// * `num_params` - Parameter validation rules for the operator
+///
+/// # Example
+/// ```
+/// use jsonlogic_rs::{add_data_operation, NumParams};
+/// use serde_json::{json, Value};
+///
+/// // Register a custom "env" operation that reads environment variables
+/// add_data_operation("env", |_data, args| {
+///     if let Some(Value::String(var_name)) = args.first() {
+///         match std::env::var(var_name) {
+///             Ok(value) => Ok(json!(value)),
+///             Err(_) => Ok(Value::Null),
+///         }
+///     } else {
+///         Ok(Value::Null)
+///     }
+/// }, NumParams::Exactly(1));
+/// ```
+pub fn add_data_operation(
+    name: &str,
+    operator: DataOperatorFn,
+    num_params: NumParams,
+) -> Result<(), Error> {
+    let registry = get_custom_operator_registry();
+    let dynamic_op = DynamicDataOperator::new(name, operator, num_params);
+
+    registry
+        .data_operators
+        .write()
+        .map_err(|_| Error::RegistryError {
+            reason: "Failed to acquire data operator registry lock".to_string(),
+        })?
+        .insert(name.to_string(), dynamic_op);
+
+    Ok(())
+}
+
+/// Remove a custom operation by name.
+///
+/// This function removes a dynamically registered operator from all operator maps.
+/// It will not affect built-in static operators.
+///
+/// # Arguments
+/// * `name` - The name of the operator to remove
+///
+/// # Returns
+/// * `Ok(true)` if an operator was removed, `Ok(false)` if no operator with that name was found
+/// * `Err(Error::RegistryError)` if lock acquisition failed
+pub fn remove_operation(name: &str) -> Result<bool, Error> {
+    let registry = get_custom_operator_registry();
+    let mut removed = false;
+
+    removed |= registry
+        .operators
+        .write()
+        .map_err(|_| Error::RegistryError {
+            reason: "Failed to acquire operator registry lock".to_string(),
+        })?
+        .remove(name)
+        .is_some();
+
+    removed |= registry
+        .lazy_operators
+        .write()
+        .map_err(|_| Error::RegistryError {
+            reason: "Failed to acquire lazy operator registry lock".to_string(),
+        })?
+        .remove(name)
+        .is_some();
+
+    removed |= registry
+        .data_operators
+        .write()
+        .map_err(|_| Error::RegistryError {
+            reason: "Failed to acquire data operator registry lock".to_string(),
+        })?
+        .remove(name)
+        .is_some();
+
+    Ok(removed)
+}
+
+/// Clear all custom operations.
+///
+/// This function removes all dynamically registered operators, but does not
+/// affect built-in static operators.
+///
+/// # Returns
+/// * `Ok(())` if all operations were cleared successfully
+/// * `Err(Error::RegistryError)` if lock acquisition failed
+pub fn clear_operations() -> Result<(), Error> {
+    let registry = get_custom_operator_registry();
+
+    registry
+        .operators
+        .write()
+        .map_err(|_| Error::RegistryError {
+            reason: "Failed to acquire operator registry lock".to_string(),
+        })?
+        .clear();
+
+    registry
+        .lazy_operators
+        .write()
+        .map_err(|_| Error::RegistryError {
+            reason: "Failed to acquire lazy operator registry lock".to_string(),
+        })?
+        .clear();
+
+    registry
+        .data_operators
+        .write()
+        .map_err(|_| Error::RegistryError {
+            reason: "Failed to acquire data operator registry lock".to_string(),
+        })?
+        .clear();
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1399,5 +1635,186 @@ mod jsonlogic_tests {
     #[test]
     fn test_in_op() {
         in_cases().into_iter().for_each(assert_jsonlogic)
+    }
+
+    #[test]
+    fn test_custom_operations() {
+        // Test custom regular operation
+        add_operation(
+            "double",
+            |args| {
+                if let Some(Value::Number(n)) = args.first() {
+                    if let Some(num) = n.as_f64() {
+                        return Ok(json!(num * 2.0));
+                    }
+                }
+                Ok(Value::Null)
+            },
+            NumParams::Exactly(1),
+        )
+        .unwrap();
+
+        let result = apply(&json!({"double": [5]}), &json!({})).unwrap();
+        assert_eq!(result, json!(10.0));
+
+        // Test custom lazy operation
+        add_lazy_operation(
+            "first_truthy",
+            |_data, args| {
+                for arg in args {
+                    if let Value::Bool(true) = arg {
+                        return Ok(json!(true));
+                    }
+                    if let Value::Number(n) = arg {
+                        if n.as_f64().unwrap_or(0.0) != 0.0 {
+                            return Ok((*arg).clone());
+                        }
+                    }
+                }
+                Ok(Value::Null)
+            },
+            NumParams::AtLeast(1),
+        )
+        .unwrap();
+
+        let result =
+            apply(&json!({"first_truthy": [false, 0, 42, true]}), &json!({})).unwrap();
+        assert_eq!(result, json!(42));
+
+        // Test custom data operation
+        add_data_operation(
+            "get_field",
+            |data, args| {
+                if let Some(Value::String(field)) = args.first() {
+                    if let Value::Object(obj) = data {
+                        return Ok(obj.get(field).cloned().unwrap_or(Value::Null));
+                    }
+                }
+                Ok(Value::Null)
+            },
+            NumParams::Exactly(1),
+        )
+        .unwrap();
+
+        let result =
+            apply(&json!({"get_field": ["name"]}), &json!({"name": "test"})).unwrap();
+        assert_eq!(result, json!("test"));
+
+        // Test overriding built-in operators
+        add_operation(
+            "==",
+            |_args| {
+                // Custom equality that always returns false
+                Ok(json!(false))
+            },
+            NumParams::Exactly(2),
+        )
+        .unwrap();
+
+        let result = apply(&json!({"==": [1, 1]}), &json!({})).unwrap();
+        assert_eq!(result, json!(false)); // Our custom operator overrides the built-in
+
+        // Clean up
+        clear_operations().unwrap();
+
+        // After clearing, built-in operators should work again
+        let result = apply(&json!({"==": [1, 1]}), &json!({})).unwrap();
+        assert_eq!(result, json!(true));
+    }
+
+    #[test]
+    fn test_error_handling_in_custom_operations() {
+        // Test that consumers can use the Error type for proper error handling
+        add_operation(
+            "test_error_unique",
+            |args| {
+                if let Some(Value::String(s)) = args.first() {
+                    if s == "error" {
+                        return Err(Error::InvalidArgument {
+                            value: args[0].clone(),
+                            operation: "test_error_unique".to_string(),
+                            reason: "Custom error message".to_string(),
+                        });
+                    }
+                }
+                Ok(json!("success"))
+            },
+            NumParams::Exactly(1),
+        )
+        .unwrap();
+
+        // Test successful case
+        let result = apply(&json!({"test_error_unique": [1]}), &json!({})).unwrap();
+        assert_eq!(result, json!("success"));
+
+        // Test custom error case
+        match apply(&json!({"test_error_unique": ["error"]}), &json!({})) {
+            Ok(_) => panic!("Should have failed!"),
+            Err(e) => {
+                // Verify we can match on the Error type
+                match e {
+                    Error::InvalidArgument {
+                        operation, reason, ..
+                    } => {
+                        assert_eq!(operation, "test_error_unique");
+                        assert_eq!(reason, "Custom error message");
+                    }
+                    _ => panic!("Wrong error type: {:?}", e),
+                }
+            }
+        }
+
+        // Clean up
+        clear_operations().unwrap();
+    }
+
+    #[test]
+    fn test_wrong_argument_count_error() {
+        // Register an operation that expects exactly 2 arguments
+        add_operation(
+            "test_two_args",
+            |args| {
+                if args.len() == 2 {
+                    Ok(json!("success"))
+                } else {
+                    panic!("Should not reach here - NumParams should validate first")
+                }
+            },
+            NumParams::Exactly(2),
+        )
+        .unwrap();
+
+        // Test correct argument count
+        let result = apply(&json!({"test_two_args": [1, 2]}), &json!({})).unwrap();
+        assert_eq!(result, json!("success"));
+
+        // Test wrong argument count - too few
+        match apply(&json!({"test_two_args": [1]}), &json!({})) {
+            Ok(_) => panic!("Should have failed with wrong argument count!"),
+            Err(Error::WrongArgumentCount { expected, actual }) => {
+                assert_eq!(actual, 1);
+                match expected {
+                    NumParams::Exactly(n) => assert_eq!(n, 2),
+                    _ => panic!("Expected NumParams::Exactly(2)"),
+                }
+            }
+            Err(e) => panic!("Wrong error type: {:?}", e),
+        }
+
+        // Test wrong argument count - too many
+        match apply(&json!({"test_two_args": [1, 2, 3]}), &json!({})) {
+            Ok(_) => panic!("Should have failed with wrong argument count!"),
+            Err(Error::WrongArgumentCount { expected, actual }) => {
+                assert_eq!(actual, 3);
+                match expected {
+                    NumParams::Exactly(n) => assert_eq!(n, 2),
+                    _ => panic!("Expected NumParams::Exactly(2)"),
+                }
+            }
+            Err(e) => panic!("Wrong error type: {:?}", e),
+        }
+
+        // Clean up
+        clear_operations().unwrap();
     }
 }
